@@ -60,6 +60,7 @@ async def execute_single(agent_config: dict, task: dict, input_used: dict) -> Ru
             "output": "",
             "reasoning_steps": [],
             "tool_calls": [],
+            "round": 0,
         })
 
         messages = result["messages"]

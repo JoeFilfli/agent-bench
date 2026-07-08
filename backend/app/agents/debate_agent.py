@@ -35,8 +35,9 @@ def build_debate(config: dict):
         response = await proposer_model.ainvoke(msgs)
         steps = state.get("reasoning_steps", [])
         steps.append({"role": "proposer", "round": state["round"], "content": response.content})
+        tagged = response.model_copy(update={"content": f"[Proposer round {state['round']}]: {response.content}"})
         return {
-            "messages": [AIMessage(content=f"[Proposer round {state['round']}]: {response.content}")],
+            "messages": [tagged],
             "reasoning_steps": steps,
         }
 
@@ -46,8 +47,9 @@ def build_debate(config: dict):
         response = await opposer_model.ainvoke(msgs)
         steps = state.get("reasoning_steps", [])
         steps.append({"role": "opposer", "round": state["round"], "content": response.content})
+        tagged = response.model_copy(update={"content": f"[Opposer round {state['round']}]: {response.content}"})
         return {
-            "messages": [AIMessage(content=f"[Opposer round {state['round']}]: {response.content}")],
+            "messages": [tagged],
             "round": state["round"] + 1,
             "reasoning_steps": steps,
         }
@@ -60,7 +62,7 @@ def build_debate(config: dict):
             AIMessage(content=f"Debate history:\n{history}\n\nNow give the final answer."),
         ]
         response = await judge_model.ainvoke(msgs)
-        return {"output": response.content, "messages": [AIMessage(content=response.content)]}
+        return {"output": response.content, "messages": [response]}
 
     def should_continue(state: DebateState) -> str:
         if state["round"] > rounds:

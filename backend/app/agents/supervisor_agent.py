@@ -1,6 +1,7 @@
+import operator
 from typing import Annotated, TypedDict
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import HumanMessage, SystemMessage
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
@@ -12,9 +13,9 @@ class SupervisorState(TypedDict):
     messages: Annotated[list, add_messages]
     task: str
     output: str
-    reasoning_steps: list
+    reasoning_steps: Annotated[list, operator.add]
     tool_calls: list
-    worker_results: dict
+    worker_results: Annotated[dict, operator.or_]
 
 
 def build_supervisor(config: dict):
@@ -44,7 +45,7 @@ def build_supervisor(config: dict):
         steps = state.get("reasoning_steps", [])
         steps.append({"role": "orchestrator", "content": response.content})
         return {
-            "messages": [AIMessage(content=response.content)],
+            "messages": [response],
             "reasoning_steps": steps,
         }
 
@@ -54,14 +55,11 @@ def build_supervisor(config: dict):
         async def worker_node(state: SupervisorState) -> dict:
             msgs = [SystemMessage(content=sys_prompt)] + list(state["messages"])
             response = await model.ainvoke(msgs)
-            results = dict(state.get("worker_results", {}))
-            results[role] = response.content
-            steps = state.get("reasoning_steps", [])
-            steps.append({"role": role, "content": response.content})
+            tagged = response.model_copy(update={"content": f"[{role}]: {response.content}"})
             return {
-                "messages": [AIMessage(content=f"[{role}]: {response.content}")],
-                "worker_results": results,
-                "reasoning_steps": steps,
+                "messages": [tagged],
+                "worker_results": {role: response.content},
+                "reasoning_steps": [{"role": role, "content": response.content}],
             }
 
         worker_node.__name__ = role
@@ -75,7 +73,7 @@ def build_supervisor(config: dict):
             HumanMessage(content=f"Task: {state['task']}\n\nWorker results:\n{summary}"),
         ]
         response = await orch_model.ainvoke(msgs)
-        return {"output": response.content, "messages": [AIMessage(content=response.content)]}
+        return {"output": response.content, "messages": [response]}
 
     builder = StateGraph(SupervisorState)
     builder.add_node("orchestrator", orchestrator_node)

@@ -1,6 +1,6 @@
 from typing import Annotated, TypedDict
 
-from langchain_core.messages import AIMessage, HumanMessage, SystemMessage
+from langchain_core.messages import SystemMessage
 from langchain_openai import ChatOpenAI
 from langgraph.graph import END, StateGraph
 from langgraph.graph.message import add_messages
@@ -34,7 +34,7 @@ def build_pipeline(config: dict):
             steps = state.get("reasoning_steps", [])
             steps.append({"role": role, "content": response.content})
             return {
-                "messages": [AIMessage(content=response.content)],
+                "messages": [response],
                 "output": response.content,
                 "reasoning_steps": steps,
             }
