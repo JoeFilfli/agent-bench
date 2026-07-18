@@ -2,7 +2,6 @@ import json
 import re
 import subprocess
 import sys
-import textwrap
 from typing import Callable
 
 from openai import AsyncOpenAI
@@ -18,7 +17,9 @@ _JUDGE_TOOLS = [
         "function": {
             "name": "run_python",
             "description": (
-                "Execute Python code and return its stdout. "
+                "Execute Python code as a plain script and return its stdout. "
+                "This is NOT a REPL or notebook — a bare trailing expression produces no output. "
+                "You must explicitly print() anything you want to see back. "
                 "Use this to verify arithmetic, simulate processes, run submitted code against inputs, "
                 "or check any claim that can be confirmed computationally."
             ),
@@ -97,7 +98,11 @@ async def score_llm_judge(output: str, metadata: dict) -> float:
         {"role": "user", "content": user_msg},
     ]
 
-    for _ in range(_JUDGE_MAX_TOOL_ROUNDS):
+    print(f"[score_llm_judge] rubric={rubric!r}")
+    print(f"[score_llm_judge] expected={expected!r}")
+    print(f"[score_llm_judge] user_msg:\n{user_msg}\n---")
+
+    for round_num in range(_JUDGE_MAX_TOOL_ROUNDS):
         response = await _openai.chat.completions.create(
             model=_JUDGE_MODEL,
             messages=messages,
@@ -107,11 +112,17 @@ async def score_llm_judge(output: str, metadata: dict) -> float:
         choice = response.choices[0]
         msg = choice.message
 
+        print(
+            f"[score_llm_judge] round {round_num} finish_reason={choice.finish_reason!r} "
+            f"content={msg.content!r} tool_calls={msg.tool_calls!r}"
+        )
+
         if choice.finish_reason == "tool_calls":
             messages.append(msg)
             for tc in msg.tool_calls:
                 code = json.loads(tc.function.arguments).get("code", "")
                 result = _run_python_safe(code)
+                print(f"[score_llm_judge] round {round_num} ran code:\n{code}\n-> result={result!r}")
                 messages.append({
                     "role": "tool",
                     "tool_call_id": tc.id,
@@ -121,11 +132,19 @@ async def score_llm_judge(output: str, metadata: dict) -> float:
 
         raw = (msg.content or "").strip()
         try:
-            return max(0.0, min(1.0, float(raw)))
+            score = max(0.0, min(1.0, float(raw)))
+            print(f"[score_llm_judge] parsed float directly: raw={raw!r} -> score={score}")
+            return score
         except ValueError:
             match = re.search(r"\d+\.?\d*", raw)
-            return max(0.0, min(1.0, float(match.group()))) if match else 0.0
+            score = max(0.0, min(1.0, float(match.group()))) if match else 0.0
+            print(
+                f"[score_llm_judge] float() failed on raw={raw!r}; "
+                f"regex fallback match={match.group() if match else None!r} -> score={score}"
+            )
+            return score
 
+    print(f"[score_llm_judge] exhausted {_JUDGE_MAX_TOOL_ROUNDS} tool rounds without a final answer -> returning 0.0")
     return 0.0
 
 
@@ -148,14 +167,14 @@ async def score_code_execution(output: str, metadata: dict) -> float:
     for case in test_cases:
         args = case.get("input", [])
         expected = case.get("expected")
-        harness = textwrap.dedent(f"""
-            {code}
-
-            import inspect as _inspect
-            _fns = [v for k, v in list(vars().items()) if callable(v) and not k.startswith('_') and not _inspect.isbuiltin(v) and not _inspect.isclass(v)]
-            result = _fns[0](*{args!r}) if _fns else None
-            print(repr(result))
-        """)
+        harness = (
+            f"{code}\n\n"
+            "import inspect as _inspect\n"
+            "_fns = [v for k, v in list(vars().items()) if callable(v) and not k.startswith('_') "
+            "and not _inspect.isbuiltin(v) and not _inspect.isclass(v)]\n"
+            f"result = _fns[0](*{args!r}) if _fns else None\n"
+            "print(repr(result))\n"
+        )
         try:
             proc = subprocess.run(
                 [sys.executable, "-c", harness],
@@ -164,7 +183,9 @@ async def score_code_execution(output: str, metadata: dict) -> float:
             result_repr = proc.stdout.strip()
             if repr(expected) == result_repr:
                 passed += 1
-        except (subprocess.TimeoutExpired, Exception):
+        except subprocess.TimeoutExpired:
+            pass
+        except Exception:
             pass
 
     return passed / len(test_cases)
